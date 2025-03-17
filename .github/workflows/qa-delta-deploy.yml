@@ -1,0 +1,52 @@
+name: qadeploy
+
+on:
+  push:
+    branches:
+      - develop  # Trigger workflow on commits pushed to the develop branch
+
+jobs:
+  build:
+    runs-on: 
+      group: gps-github-runners
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Install Salesforce CLI
+        run: npm install @salesforce/cli --global
+
+      - name: Authenticate QA Org
+        run: |
+          echo "${{ secrets.QA_SALESFORCE_JWT_SECRET_KEY }}" > server.key
+          sfdx force:auth:jwt:grant --clientid ${{ secrets.QA_SALESFORCE_CONSUMER_KEY }} --jwtkeyfile server.key --username ${{ secrets.QA_SALESFORCE_USERNAME }} --setalias=acpqa --instanceurl https://test.salesforce.com
+
+      - name: Fetch the latest develop branch state
+        id: fetch_develop
+        run: |
+          git fetch origin develop
+          DEVELOP_COMMIT_HASH=$(git rev-parse origin/develop)
+          echo "Latest commit hash on develop: $DEVELOP_COMMIT_HASH"
+          echo "::set-output name=develop_commit::${DEVELOP_COMMIT_HASH}"
+
+      - name: Get Current Commit Hash (HEAD)
+        id: current_commit
+        run: |
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          echo "Current commit hash: $CURRENT_COMMIT"
+          echo "::set-output name=current_commit::${CURRENT_COMMIT}"
+
+      - name: Generate Delta Folder Between Develop and Current Commit
+        run: |
+          # Generate the delta between develop and the current commit (HEAD)
+          sf sgd source delta --from ${{ steps.fetch_develop.outputs.develop_commit }} --to ${{ steps.current_commit.outputs.current_commit }} --output-dir "changed-sources" --generate-delta
+          
+          # Ensure the delta folder is created and populated
+          echo "Delta folder generated at 'changed-sources'"
+          ls -R changed-sources
+
+      - name: Deploy the Delta Folder to Salesforce QA Org
+        run: |
+          # Deploy the delta folder directly to the target Salesforce org (QA)
+          sf deploy --target-org acpqa --source-dir changed-sources --test-level NoTestRun

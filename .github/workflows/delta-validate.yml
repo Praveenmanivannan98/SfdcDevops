@@ -1,0 +1,56 @@
+name: delta-validate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [delta-dev]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: 
+      group: gps-github-runners
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Dependencies
+        run: npm install @salesforce/cli --global
+      - name: Install Salesforce SGD Plugin
+        run: |
+          echo y | sf plugins install sfdx-git-delta
+      - name: Create changed-sources dir 
+        run: mkdir changed-sources
+      - name: Authenticate QA
+        run: |
+          echo "${{ secrets.QA_SALESFORCE_JWT_SECRET_KEY }}" > server.key
+          sfdx force:auth:jwt:grant --clientid ${{ secrets.QA_SALESFORCE_CONSUMER_KEY }} --jwtkeyfile server.key --username ${{ vars.QA_SALESFORCE_USERNAME}} --setalias=acpqa --instanceurl https://test.salesforce.com
+      - name: Fetch Source and Target Branch SHA
+        run: |
+            git fetch origin
+            SOURCE_BRANCH_SHA=$(git rev-parse origin/${{ github.head_ref }})
+            TARGET_BRANCH_SHA=$(git rev-parse origin/${{ github.base_ref }})
+            echo "Source branch SHA: $SOURCE_BRANCH_SHA"
+            echo "Target branch SHA: $TARGET_BRANCH_SHA"
+            echo "Generating deployment delta..." 
+            echo "Comparing from branch: $TARGET_BRANCH_SHA"  
+            echo "Comparing to branch: $SOURCE_BRANCH_SHA"  
+            sf sgd source delta --from $TARGET_BRANCH_SHA --to $SOURCE_BRANCH_SHA --output-dir "changed-sources" --generate-delta
+            echo "Delta generation complete."
+      - name: Echo Changed Sources
+        run: |
+            echo "Contents of changed-sources directory:"
+            cat changed-sources/package/package.xml
+      - name: Validate
+        run: |
+              TEST_CLASSES=$(ls force-app/main/default/classes | grep -x "NP_.*Test\.cls\|DM_.*Test\.cls\|lm_.*Test\.cls\|OneSpan.*Test\.cls\|IVI_.*Test\.cls" | sed "s/.cls//" | sed 'H;1h;$!d;x;y/\n/ /')
+              sf project deploy start --dry-run --test-level RunSpecifiedTests --tests $TEST_CLASSES -o acpqa -d changed-sources/force-app
+      - name: Commit and Push Changed Sources
+        run: |
+          git config --global user.name "integration-devops"
+          git config --global user.email "praveen.kumar155@infosys.com"
+          git remote set-url origin https://x-access-token:${{ github.token }}@github.com/p-amers-us-nissan-pay/nissan-pay.git
+          git checkout ${{ github.head_ref }}
+          git add .
+          git commit -m "Update changed sources after validation"
+          git push origin ${{ github.head_ref }}

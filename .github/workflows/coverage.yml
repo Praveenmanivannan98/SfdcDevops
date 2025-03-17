@@ -1,0 +1,72 @@
+name: Salesforce Test Code Coverage
+
+on:
+  push:
+    branches:
+    #  - main  
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Salesforce CLI
+        uses: amtrack/sfdx-action@v1
+        with:
+          sfdx-version: 'latest'
+
+      - name: Authenticate to Salesforce Org
+        run: |
+          echo ${{ secrets.SFDX_AUTH_URL }} > sfdx_auth_url.txt
+          sfdx force:auth:sfdxurl:store --sfdxurlfile sfdx_auth_url.txt --setdefaultusername
+
+      - name: Retrieve test classes and run tests
+        run: |
+          # Run tests and retrieve code coverage in JSON format
+          sfdx force:apex:test:run --resultformat=JSON --codecoverage --synchronous --testlevel RunAllTestsInOrg > result.json
+          
+      - name: Install Python and dependencies
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Convert results to Excel
+        run: |
+          # Install pandas and openpyxl for Excel file handling
+          pip install pandas openpyxl
+
+          # Convert JSON result to an Excel file using Python
+          python -c "
+            import pandas as pd
+            import json
+
+            # Load the JSON file
+            with open('result.json') as f:
+                data = json.load(f)
+
+            # Extract test class and coverage details
+            coverage_data = []
+            for test in data['tests']:
+                for coverage in test['codeCoverage']:
+                    coverage_data.append({
+                        'ApexClass': coverage['apexClass']['name'],
+                        'CoveredLines': coverage['numLinesCovered'],
+                        'TotalLines': coverage['numLines'],
+                        'CoveragePercentage': (coverage['numLinesCovered'] / coverage['numLines']) * 100
+                    })
+
+            # Create a DataFrame
+            df = pd.DataFrame(coverage_data)
+
+            # Save to Excel
+            df.to_excel('test_coverage_results.xlsx', index=False)
+            "
+
+                - name: Upload Excel File as Artifact
+                    uses: actions/upload-artifact@v2
+                    with:
+                    name: test-coverage-results
+                    path: test_coverage_results.xlsx
